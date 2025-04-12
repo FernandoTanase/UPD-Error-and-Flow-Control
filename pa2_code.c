@@ -137,7 +137,7 @@ void *client_thread_func(void *arg) {
 	    while (bytes_rcvd < MESSAGE_SIZE)
 	    {
 		    // Use epoll to wait for return message with a timeout of 25us (otherwise it will wait indefinitely => no lost packets)
-		    epoll = epoll_wait(data->epoll_fd, events, MAX_EVENTS, 25);
+		    epoll = epoll_wait(data->epoll_fd, events, MAX_EVENTS, 0.025);
 		    if (epoll < 0){
 			    SystemErrorMessage("epoll_wait() failure");
             }else if (epoll == 0){
@@ -146,14 +146,8 @@ void *client_thread_func(void *arg) {
             }
 		    // Read data from server.
 		    socklen_t addr_len = sizeof(s_addr);
-            ssize_t recv_rcvd = recvfrom(data->socket_fd, recv_buf+bytes_rcvd, MESSAGE_SIZE, 0,
+            ssize_t recv_rcvd = recvfrom(data->socket_fd, recv_buf, MESSAGE_SIZE, 0,
                 (struct sockaddr *)&s_addr, &addr_len);
-		    if (recv_rcvd < 0){
-                if (errno == EAGAIN || errno == EWOULDBLOCK){
-                    continue; // No data available, continue waiting
-                }
-			    SystemErrorMessage("recv() failure");
-            }
 		    // Save the number of
 		    bytes_rcvd += recv_rcvd;
 	    }
@@ -306,8 +300,7 @@ void run_server()
     
     while (1)
     {
-        //Wait only 25 ms for incoming data
-        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 25);
+        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
         if (nfds == -1)
             SystemErrorMessage("Epoll wait failed");
 
