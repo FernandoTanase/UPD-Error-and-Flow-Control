@@ -252,6 +252,10 @@ void run_client()
         printf("No messages were processed.\n");
     }
     printf("Total Request Rate: %f messages/s\n", total_request_rate);
+
+    // Print the number of lost messages
+    long lost_pkt_cnt = num_requests * num_client_threads - total_messages;
+    printf("Lost packets: %ld\n", lost_pkt_cnt);
 }
 
 
