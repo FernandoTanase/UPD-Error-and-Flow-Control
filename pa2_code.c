@@ -35,6 +35,7 @@ Please specify the group members here
 #include <sys/time.h>
 #include <pthread.h>
 #include <errno.h>
+#include <time.h>
 
 #define MAX_EVENTS 64
 #define MESSAGE_SIZE 16
@@ -113,9 +114,6 @@ void *client_thread_func(void *arg) {
     else if (r_val < 0)
 	    SystemErrorMessage("inet_pton() failed.");
 
-    // Set server port.
-    s_addr.sin_port = server_port;
-
     // Initialize variables for sending/recieving data.
     ssize_t bytes = 0;
     ssize_t bytes_rcvd = 0;
@@ -138,15 +136,24 @@ void *client_thread_func(void *arg) {
 	    int bytes_rcvd = 0;
 	    while (bytes_rcvd < MESSAGE_SIZE)
 	    {
-		    // Use epoll to wait for return message.
-		    epoll = epoll_wait(data->epoll_fd, events, MAX_EVENTS, -1);
-		    if (epoll < 0)
+		    // Use epoll to wait for return message with a timeout of 25us (otherwise it will wait indefinitely => no lost packets)
+		    epoll = epoll_wait(data->epoll_fd, events, MAX_EVENTS, 25);
+		    if (epoll < 0){
 			    SystemErrorMessage("epoll_wait() failure");
+            }else if (epoll == 0){
+                // Timeout occurred, no data received
+                break;
+            }
 		    // Read data from server.
-		    ssize_t recv_rcvd = recvfrom(data->socket_fd, recv_buf+bytes_rcvd, MESSAGE_SIZE, 0,
-                (struct sockaddr *)&s_addr, NULL);
-		    if (recv_rcvd < 0)
+		    socklen_t addr_len = sizeof(s_addr);
+            ssize_t recv_rcvd = recvfrom(data->socket_fd, recv_buf+bytes_rcvd, MESSAGE_SIZE, 0,
+                (struct sockaddr *)&s_addr, &addr_len);
+		    if (recv_rcvd < 0){
+                if (errno == EAGAIN || errno == EWOULDBLOCK){
+                    continue; // No data available, continue waiting
+                }
 			    SystemErrorMessage("recv() failure");
+            }
 		    // Save the number of
 		    bytes_rcvd += recv_rcvd;
 	    }
@@ -154,13 +161,15 @@ void *client_thread_func(void *arg) {
 	    // Save end time.
 	    t_end = gettimeofday(&end, NULL);
 
+        if(bytes_rcvd == MESSAGE_SIZE){
 	    // Accumulate RTT.
 	    long rtt = ((end.tv_sec - start.tv_sec) * MICROSEC_TO_SEC) + (end.tv_usec - start.tv_usec);
             if (rtt < 0) rtt = 0; // Ensure RTT is not negative
 
             // Update total RTT
-            data->total_rtt += rtt;
-            data->total_messages++;
+        data->total_rtt += rtt;
+        data->total_messages++;
+        }
 
     }
 
@@ -297,7 +306,8 @@ void run_server()
     
     while (1)
     {
-        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        //Wait only 25 ms for incoming data
+        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 25);
         if (nfds == -1)
             SystemErrorMessage("Epoll wait failed");
 

@@ -54,3 +54,7 @@ dkms.conf
 
 # VSCode
 .vscode/
+
+# Executable files
+*.exe
+pa2_binary
