@@ -252,13 +252,15 @@ void run_client()
     printf("Total Request Rate: %f messages/s\n", total_request_rate);
 }
 
-void run_server() {
-    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) 
+
+void run_server()
+{
+    int server_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (server_socket == -1)
         SystemErrorMessage("Server socket creation failed");
- 
+
     int opt = 1;
-    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) 
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
         SystemErrorMessage("Setsockopt failed");
 
     fcntl(server_socket, F_SETFL, O_NONBLOCK);
@@ -269,113 +271,89 @@ void run_server() {
     server_addr.sin_addr.s_addr = inet_addr(server_ip);
     server_addr.sin_port = htons(server_port);
 
-    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) 
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1)
         SystemErrorMessage("Bind failed");
 
-    if (listen(server_socket, SOMAXCONN) == -1) 
-        SystemErrorMessage("Listen failed");
-
     int epoll_fd = epoll_create1(0);
-    if (epoll_fd == -1) 
+    if (epoll_fd == -1)
         SystemErrorMessage("Epoll create failed");
 
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = server_socket;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_socket, &ev) == -1) 
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_socket, &ev) == -1)
         SystemErrorMessage("Epoll_ctl failed");
 
     struct epoll_event events[MAX_EVENTS];
-    while (1) {
+    char buffer[MESSAGE_SIZE];
+    
+    //printf("UDP Server running on %s:%d\n", server_ip, server_port);
+    
+    while (1)
+    {
         int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
-        if (nfds == -1) 
+        if (nfds == -1)
             SystemErrorMessage("Epoll wait failed");
 
-        for (int i = 0; i < nfds; i++) {
-            if (events[i].data.fd == server_socket) {
-                // Accept all pending connections
-                while (1) {
-                    struct sockaddr_in client_addr;
-                    socklen_t client_len = sizeof(client_addr);
-                    int client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_len);
-                    
-                    if (client_socket == -1) {
-                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                            perror("Accept failed");
-                        }
-                        break;  // No more connections to accept
-                    }
-
-                    fcntl(client_socket, F_SETFL, O_NONBLOCK);
-
-                    struct epoll_event ev;
-                    ev.events = EPOLLIN | EPOLLET;
-                    ev.data.fd = client_socket;
-                    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_socket, &ev) == -1) {
-                        perror("Epoll_ctl failed for client socket");
-                        close(client_socket);
-                        continue;
-                    }
-                }
-            } else {
-                int client_socket = events[i].data.fd;
-                char buffer[MESSAGE_SIZE];
+        for (int i = 0; i < nfds; i++)
+        {
+            if (events[i].data.fd == server_socket)
+            {
+                struct sockaddr_in client_addr;
+                socklen_t client_len = sizeof(client_addr);
                 
-                // Handle data from client - proper edge-triggered handling by reading until EAGAIN
-                while (1) {
-                    ssize_t bytes_read = read(client_socket, buffer, MESSAGE_SIZE);
+                // Handle data from client - proper edge-triggered handling
+                while (1)
+                {
+                    // Receive datagram with client address
+                    ssize_t bytes_read = recvfrom(server_socket, buffer, sizeof(buffer), 0,
+                                               (struct sockaddr*)&client_addr, &client_len);
                     
-                    if (bytes_read == -1) {
-                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                            close(client_socket);
-                            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client_socket, NULL);
-                        }
-                        break;  // Either error or no more data
+                    if (bytes_read < 0)
+                    {
+                        if (errno != EAGAIN && errno != EWOULDBLOCK)
+                            perror("recvfrom() error");
+                        break; // No more data or error
                     }
                     
-                    if (bytes_read == 0) {
-                        close(client_socket);
-                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client_socket, NULL);
-                        break;  // Connection closed
-                    }
-
-                    // Echo back all the data read
-                    size_t bytes_to_write = bytes_read;
-                    size_t bytes_written = 0;
-                    while (bytes_written < bytes_to_write) {
-                        ssize_t result = write(client_socket, buffer + bytes_written, bytes_to_write - bytes_written);
-                        if (result == -1) {
-                            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                                close(client_socket);
-                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client_socket, NULL);
-                                break;
-                            }
-                            // Would block, try again later
-                            break;
-                        }
-                        bytes_written += result;
-                    }
+                    // Echo back to the client that sent this datagram
+                    ssize_t result = sendto(server_socket, buffer, bytes_read, 0,
+                                         (struct sockaddr*)&client_addr, client_len);
+                    
+                    if (result < 0)
+                        perror("sendto() error");
                 }
             }
         }
     }
-    
 }
 
-int main(int argc, char *argv[]) {
-    if (argc > 1 && strcmp(argv[1], "server") == 0) {
-        if (argc > 2) server_ip = argv[2];
-        if (argc > 3) server_port = atoi(argv[3]);
+int main(int argc, char *argv[])
+{
+    if (argc > 1 && strcmp(argv[1], "server") == 0)
+    {
+        if (argc > 2)
+            server_ip = argv[2];
+        if (argc > 3)
+            server_port = atoi(argv[3]);
 
         run_server();
-    } else if (argc > 1 && strcmp(argv[1], "client") == 0) {
-        if (argc > 2) server_ip = argv[2];
-        if (argc > 3) server_port = atoi(argv[3]);
-        if (argc > 4) num_client_threads = atoi(argv[4]);
-        if (argc > 5) num_requests = atoi(argv[5]);
+    }
+    else if (argc > 1 && strcmp(argv[1], "client") == 0)
+    {
+        if (argc > 2)
+            server_ip = argv[2];
+        if (argc > 3)
+            server_port = atoi(argv[3]);
+        if (argc > 4)
+            num_client_threads = atoi(argv[4]);
+        if (argc > 5)
+            num_requests = atoi(argv[5]);
 
         run_client();
-    } else {
+    }
+    else
+    {
         printf("Usage: %s <server|client> [server_ip server_port num_client_threads num_requests]\n", argv[0]);
     }
 
