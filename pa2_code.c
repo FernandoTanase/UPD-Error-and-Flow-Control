@@ -104,6 +104,7 @@ void *client_thread_func(void *arg) {
     struct sockaddr_in s_addr;
     memset(&s_addr, 0, sizeof(s_addr)); // Zero out.
     s_addr.sin_family = AF_INET; // Set family.
+    s_addr.sin_port = htons(server_port);
 
     // Convert address string to 32-bit binary
     int r_val = inet_pton(AF_INET, server_ip, &s_addr.sin_addr.s_addr);
@@ -126,7 +127,8 @@ void *client_thread_func(void *arg) {
     	t_start = gettimeofday(&start, NULL);
 
 	    // Send to server.
-	    bytes = send(data->socket_fd, send_buf, MESSAGE_SIZE, 0);
+	    bytes = sendto(data->socket_fd, send_buf, MESSAGE_SIZE, 0,
+            (struct sockaddr *)&s_addr, sizeof(s_addr));
 	    if (bytes < 0)
 		    SystemErrorMessage("send() failed.");
 	    else if (bytes != MESSAGE_SIZE)
@@ -141,8 +143,9 @@ void *client_thread_func(void *arg) {
 		    if (epoll < 0)
 			    SystemErrorMessage("epoll_wait() failure");
 		    // Read data from server.
-		    ssize_t recv_rcvd = recv(data->socket_fd, recv_buf + bytes_rcvd, MESSAGE_SIZE - bytes_rcvd, 0);
-		    if (bytes_rcvd < 0)
+		    ssize_t recv_rcvd = recvfrom(data->socket_fd, recv_buf+bytes_rcvd, MESSAGE_SIZE, 0,
+                (struct sockaddr *)&s_addr, NULL);
+		    if (recv_rcvd < 0)
 			    SystemErrorMessage("recv() failure");
 		    // Save the number of
 		    bytes_rcvd += recv_rcvd;
