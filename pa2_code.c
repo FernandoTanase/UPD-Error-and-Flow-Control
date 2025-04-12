@@ -184,15 +184,14 @@ void run_client()
 	
     for (int i = 0; i < num_client_threads; i++) 
     {
-	// Create a TCP socket
-        thread_data[i].socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	// Create a UDP socket
+        thread_data[i].socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (thread_data[i].socket_fd < 0) 
 	        SystemErrorMessage("Socket creation failed");
         
-        // Connect the socket to the server
-        if (connect(thread_data[i].socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) 
-	        SystemErrorMessage("Connection to server failed");
-        
+        //Set socket to non-blocking
+        fcntl(thread_data[i].socket_fd, F_SETFL, O_NONBLOCK);
+
         // Create an epoll instance for the thread
         thread_data[i].epoll_fd = epoll_create1(0);
         if (thread_data[i].epoll_fd < 0) 
