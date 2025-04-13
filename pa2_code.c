@@ -39,7 +39,7 @@ Please specify the group members here
 
 #define MAX_EVENTS 64
 #define MESSAGE_SIZE 16
-#define DEFAULT_CLIENT_THREADS 4
+#define DEFAULT_CLIENT_THREADS 4 
 
 char *server_ip = "127.0.0.1";
 int server_port = 12345;
@@ -134,32 +134,43 @@ void *client_thread_func(void *arg) {
 
 	    // Recieve from server.
 	    int bytes_rcvd = 0;
-	    while (bytes_rcvd < MESSAGE_SIZE)
-	    {
-		    // Use epoll to wait for return message with a timeout of 25us (otherwise it will wait indefinitely => no lost packets)
-		    epoll = epoll_wait(data->epoll_fd, events, MAX_EVENTS, 0.025);
-		    if (epoll < 0){
-			    SystemErrorMessage("epoll_wait() failure");
-            }else if (epoll == 0){
-                // Timeout occurred, no data received
-                break;
-            }
-		    // Read data from server.
-		    socklen_t addr_len = sizeof(s_addr);
-            ssize_t recv_rcvd = recvfrom(data->socket_fd, recv_buf, MESSAGE_SIZE, 0,
-                (struct sockaddr *)&s_addr, &addr_len);
-		    // Save the number of
-		    bytes_rcvd += recv_rcvd;
-	    }
+
+
+        // Use epoll to wait for return message with a timeout of 25us (otherwise it will wait indefinitely => no lost packets)
+	    epoll = epoll_wait(data->epoll_fd, events, MAX_EVENTS, 1);
+	    if (epoll < 0)
+        {
+	        SystemErrorMessage("epoll_wait() failure");
+        } 
+        else if (epoll == 0)
+        {
+            continue; // Timeout occurred, no data received
+        }
+		// Read data from server.
+		socklen_t addr_len = sizeof(s_addr);
+        char buffer[MESSAGE_SIZE+1];
+        ssize_t rcvd = recvfrom(data->socket_fd, buffer, MESSAGE_SIZE, 0,
+            (struct sockaddr *)&s_addr, &addr_len);
+		if (rcvd < 0)
+        {
+            //if (errno == EAGAIN || errno == EWOULDBLOCK){
+            //    continue; // No data available, continue waiting
+            //}
+		    SystemErrorMessage("recv() failure");
+        }
+        // Save the number of
+	    bytes_rcvd += rcvd;
 
 	    // Save end time.
 	    t_end = gettimeofday(&end, NULL);
 
-        if(bytes_rcvd == MESSAGE_SIZE){
+        if (rcvd == MESSAGE_SIZE){
 	    // Accumulate RTT.
 	    long rtt = ((end.tv_sec - start.tv_sec) * MICROSEC_TO_SEC) + (end.tv_usec - start.tv_usec);
-            if (rtt < 0) rtt = 0; // Ensure RTT is not negative
-
+            if (rtt < 0)
+            {
+                rtt = 0; // Ensure RTT is not negative
+            }
             // Update total RTT
         data->total_rtt += rtt;
         data->total_messages++;
@@ -269,7 +280,8 @@ void run_server()
         SystemErrorMessage("Server socket creation failed");
 
     int opt = 1;
-    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
+    int recv_buf_size = 1024;
+    if (setsockopt(server_socket, SOL_SOCKET, SO_RCVBUF, &opt, recv_buf_size))
         SystemErrorMessage("Setsockopt failed");
 
     fcntl(server_socket, F_SETFL, O_NONBLOCK);
@@ -300,40 +312,32 @@ void run_server()
     
     while (1)
     {
-        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        //Wait only 25 ms for incoming data
+        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 1);
+
         if (nfds == -1)
             SystemErrorMessage("Epoll wait failed");
 
-        for (int i = 0; i < nfds; i++)
-        {
-            if (events[i].data.fd == server_socket)
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+              
+            // Receive datagram with client address
+            ssize_t bytes_read = recvfrom(server_socket, buffer, sizeof(buffer), 0,
+                (struct sockaddr*)&client_addr, &client_len);
+                    
+            if (bytes_read < 0)
             {
-                struct sockaddr_in client_addr;
-                socklen_t client_len = sizeof(client_addr);
-                
-                // Handle data from client - proper edge-triggered handling
-                while (1)
-                {
-                    // Receive datagram with client address
-                    ssize_t bytes_read = recvfrom(server_socket, buffer, sizeof(buffer), 0,
-                                               (struct sockaddr*)&client_addr, &client_len);
-                    
-                    if (bytes_read < 0)
-                    {
-                        if (errno != EAGAIN && errno != EWOULDBLOCK)
-                            perror("recvfrom() error");
-                        break; // No more data or error
-                    }
-                    
-                    // Echo back to the client that sent this datagram
-                    ssize_t result = sendto(server_socket, buffer, bytes_read, 0,
-                                         (struct sockaddr*)&client_addr, client_len);
-                    
-                    if (result < 0)
-                        perror("sendto() error");
-                }
+                if (errno != EAGAIN && errno != EWOULDBLOCK)
+                    perror("recvfrom() error");
+                continue; // No more data or error
             }
-        }
+                    
+            // Echo back to the client that sent this datagram
+            ssize_t result = sendto(server_socket, buffer, bytes_read, 0,
+                (struct sockaddr*)&client_addr, client_len);
+                    
+            if (result < 0)
+                perror("sendto() error");
     }
 }
 
