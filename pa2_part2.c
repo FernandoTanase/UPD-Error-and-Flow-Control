@@ -58,6 +58,7 @@ typedef enum { data, ack, nack } event_type;
 typedef struct {
     int epoll_fd;        /* File descriptor for the epoll instance, used for monitoring events on the socket. */
     int socket_fd;       /* File descriptor for the client socket connected to the server. */
+    int id;              /* Store client ID for synchronization with the server */
     long long total_rtt; /* Accumulated Round-Trip Time (RTT) for all messages sent and received (in microseconds). */
     long total_messages; /* Total number of messages sent and received. */
     float request_rate;  /* Computed request rate (requests per second) based on RTT and total messages. */
@@ -65,10 +66,11 @@ typedef struct {
 
 // Define UDP frame.
 typedef struct {
-    event_type type;
-    seq_num seq_num;
-    seq_num ack_num;
-    char msg[MESSAGE_SIZE];
+    event_type type; // 0 -- data, 1 -- ACK, 2 -- NACK
+    seq_num seq_num; 
+    seq_num ack_num; 
+    int id; // Client ID
+    char msg[MESSAGE_SIZE]; // Packet to send.
 } frame;
 
 /*
@@ -135,18 +137,22 @@ void *client_thread_func(void *arg) {
     //int bytes_rcvd = 0;
     int retry = 1;
 
+
+    frame snd_frame; // Create frame.
+    strncpy(snd_frame.msg, send_buf, MESSAGE_SIZE); // Packet to send (doesn't change).
+    snd_frame.id = data->id; // Set client ID.
     while (msg_num < num_requests)
     {
  	    // Get start time.
     	t_start = gettimeofday(&start, NULL);
 
-        // Define frame.
-        frame snd_frame;
-        strncpy(snd_frame.msg, send_buf, MESSAGE_SIZE); //snd_frame.msg = *send_buf;
-        snd_frame.seq_num = msg_num;
+        // Define frame metadata before sending.
+        //frame snd_frame;
+        //strncpy(snd_frame.msg, send_buf, MESSAGE_SIZE); //snd_frame.msg = *send_buf;
+        snd_frame.seq_num = msg_num;  
         snd_frame.ack_num = msg_num;
         snd_frame.type = 0; //Data.
-        
+        //snd_fram.id = 
         retry = 1;
 	    while (retry)
         {
@@ -157,7 +163,8 @@ void *client_thread_func(void *arg) {
 		        SystemErrorMessage("send() failed.");
 	        else if (bytes != sizeof(snd_frame))
 		        UserErrorMessage("send()","incorrect number of bytes");
-
+            
+            // Wait for response, resend on error.
             epoll = epoll_wait(data->epoll_fd, events, MAX_EVENTS, 1);
             if (epoll < 0)
                 SystemErrorMessage("epoll_wait() failure");
@@ -166,26 +173,22 @@ void *client_thread_func(void *arg) {
             else
                 retry = 0;
         }
-	    // Recieve from server.
-	    bytes_rcvd = 0;
-
+	    
     	// Read data from server.
 		socklen_t addr_len = sizeof(s_addr);
         frame rcv_buf;
-
+        
+        // Bytes recieved per message.
         bytes_rcvd = 0;
         retry = 1;
         while (retry)
         {
+            // Receive from the server.
             bytes_rcvd = recvfrom(data->socket_fd, &rcv_buf, sizeof(rcv_buf), 0,
                 (struct sockaddr *)&s_addr, &addr_len);
 		    if (bytes_rcvd < 0)
-            {
-                //if (errno == EAGAIN || errno == EWOULDBLOCK){
-                //    continue; // No data available, continue waiting
-                //}
-		        SystemErrorMessage("recv() failure");
-            }
+                SystemErrorMessage("recv() failure");
+            // Send NACK on error in transmission.
             else if (bytes_rcvd != sizeof(rcv_buf) || rcv_buf.ack_num != msg_num || rcv_buf.type != 1)
             {
                 snd_frame.ack_num = msg_num;
@@ -204,13 +207,13 @@ void *client_thread_func(void *arg) {
                 retry = 1;
                 //continue;
             }
-            else
+            else // Frame was recieved correctly.
             {
                 retry = 0;
             }
         
         }
-        // Save the number of
+        // Save the total number of bytes (across all messages).
 	    tot_bytes_rcvd += bytes_rcvd;
 
 	    // Save end time.
@@ -225,7 +228,7 @@ void *client_thread_func(void *arg) {
             // Update total RTT
         data->total_rtt += rtt;
         data->total_messages++;
-        msg_num++;
+        msg_num++; // Increment the message sequence.
         
     }
 
@@ -276,7 +279,7 @@ void run_client()
         // Initialize thread statistics
         thread_data[i].total_rtt = 0;
         thread_data[i].total_messages = 0;
-
+        thread_data[i].id = i; // Specify client ID.
         // Create a new thread for handling client communication
         pthread_create(&threads[i], NULL, client_thread_func, &thread_data[i]);
     }
