@@ -40,6 +40,7 @@ Please specify the group members here
 #define MAX_EVENTS 64
 #define MESSAGE_SIZE 16
 #define DEFAULT_CLIENT_THREADS 4 
+#define MAX_CLIENTS 128
 
 char *server_ip = "127.0.0.1";
 int server_port = 12345;
@@ -73,6 +74,11 @@ typedef struct {
     char msg[MESSAGE_SIZE]; // Packet to send.
 } frame;
 
+typedef struct {
+    struct sockaddr_in addr;
+    seq_num next_expected_seq;
+    time_t last_seen;
+} client_state;
 /*
  * This function handles system errors, prints out the results from errno.
  */
@@ -325,6 +331,7 @@ void run_client()
     // Print the number of lost messages
     long lost_pkt_cnt = num_requests * num_client_threads - total_messages;
     printf("Lost packets: %ld\n", lost_pkt_cnt);
+    printf("Packets sent == Packets received?: %s\n", (total_messages == num_requests * num_client_threads) ? "true" : "false");
 }
 
 
@@ -361,40 +368,102 @@ void run_server()
         SystemErrorMessage("Epoll_ctl failed");
 
     struct epoll_event events[MAX_EVENTS];
-    char buffer[MESSAGE_SIZE];
+
+    // Initialize client tracking array
+    client_state clients[MAX_CLIENTS] = {0};
+    int num_clients = 0;
     
-    //printf("UDP Server running on %s:%d\n", server_ip, server_port);
-   
     frame rcv_frame;
+    frame snd_frame;
      
     while (1)
     {
-        //Wait only 1 ms for incoming data
+        // Wait only 1 ms for incoming data
         int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 1);
 
         if (nfds == -1)
             SystemErrorMessage("Epoll wait failed");
 
+        if (nfds > 0) {  // Only process if we have events
             struct sockaddr_in client_addr;
             socklen_t client_len = sizeof(client_addr);
               
-            // Receive datagram with client address
-            ssize_t bytes_read = recvfrom(server_socket, buffer, sizeof(buffer), 0,
+            // Receive datagram with client address as frame structure
+            ssize_t bytes_read = recvfrom(server_socket, &rcv_frame, sizeof(rcv_frame), 0,
                 (struct sockaddr*)&client_addr, &client_len);
                     
-            if (bytes_read < 0)
-            {
+            if (bytes_read < 0) {
                 if (errno != EAGAIN && errno != EWOULDBLOCK)
                     perror("recvfrom() error");
                 continue; // No more data or error
             }
+            
+            // Process based on frame type
+            if (bytes_read == sizeof(frame)) {
+                // Find or create client state
+                int client_idx = -1;
+                for (int i = 0; i < num_clients; i++) {
+                    if (client_addr.sin_addr.s_addr == clients[i].addr.sin_addr.s_addr && 
+                        client_addr.sin_port == clients[i].addr.sin_port) {
+                        client_idx = i;
+                        break;
+                    }
+                }
+                
+                // If client not found, add new client
+                if (client_idx == -1 && num_clients < MAX_CLIENTS) {
+                    client_idx = num_clients++;
+                    memcpy(&clients[client_idx].addr, &client_addr, client_len);
+                    clients[client_idx].next_expected_seq = 0; // Start expecting seq 0
+                }
+                
+                // Update last seen timestamp
+                if (client_idx >= 0) {
+                    clients[client_idx].last_seen = time(NULL);
                     
-            // Echo back to the client that sent this datagram
-            ssize_t result = sendto(server_socket, buffer, bytes_read, 0,
-                (struct sockaddr*)&client_addr, client_len);
+                    // Prepare response frame
+                    memset(&snd_frame, 0, sizeof(snd_frame));
+                    memcpy(snd_frame.msg, rcv_frame.msg, MESSAGE_SIZE);
                     
-            if (result < 0)
-                perror("sendto() error");
+                    // Process based on frame type
+                    switch (rcv_frame.type) {
+                        case data:
+                            // Check if sequence number matches expected
+                            if (rcv_frame.seq_num == clients[client_idx].next_expected_seq) {
+                                // Valid sequence number - send ACK
+                                snd_frame.type = ack;
+                                snd_frame.ack_num = rcv_frame.seq_num;
+                                // Increment expected sequence number
+                                clients[client_idx].next_expected_seq++;
+                            } else {
+                                // Invalid sequence - send NACK
+                                snd_frame.type = nack;
+                                snd_frame.ack_num = clients[client_idx].next_expected_seq - 1;
+                            }
+                            break;
+                            
+                        case nack:
+                            // Client indicating it didn't receive our last response
+                            // Just echo back their NACK to acknowledge receipt
+                            snd_frame.type = ack;
+                            snd_frame.ack_num = rcv_frame.ack_num;
+                            break;
+                            
+                        default:
+                            // Unexpected frame type - respond with NACK
+                            snd_frame.type = nack;
+                            snd_frame.ack_num = clients[client_idx].next_expected_seq - 1;
+                    }
+                    
+                    // Send response frame to client
+                    ssize_t result = sendto(server_socket, &snd_frame, sizeof(snd_frame), 0,
+                        (struct sockaddr*)&client_addr, client_len);
+                        
+                    if (result < 0)
+                        perror("sendto() error");
+                }
+            }
+        }
     }
 }
 
